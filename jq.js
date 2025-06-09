@@ -2106,6 +2106,87 @@ const functions = {
         let f = args[0]
         yield* f.paths(input, conf)
     }, {params: [{mode: 'defer'}]}),
+    'paths/0': function*(input) {
+        function* walk(v, p=[]) {
+            let t = nameType(v)
+            if (t == 'array') {
+                for (let i=0;i<v.length;i++) {
+                    let np = p.concat([i])
+                    yield np
+                    yield* walk(v[i], np)
+                }
+            } else if (t == 'object') {
+                for (let k of Object.keys(v)) {
+                    let np = p.concat([k])
+                    yield np
+                    yield* walk(v[k], np)
+                }
+            }
+        }
+        yield* walk(input)
+    },
+    'getpath/1': Object.assign(function*(input, conf, args) {
+        for (let p of args[0].apply(input, conf)) {
+            if (nameType(p) != 'array')
+                throw 'paths must be array of path elements'
+            let cur = input
+            let ok = true
+            for (let k of p) {
+                let t = nameType(cur)
+                if (t == 'array' && typeof k == 'number') {
+                    if (k < 0) k = cur.length + k
+                    if (k < 0 || k >= cur.length) { ok = false; break }
+                    cur = cur[k]
+                } else if (t == 'object' && (typeof k == 'string' || typeof k == 'number')) {
+                    k = ''+k
+                    if (!cur.hasOwnProperty(k)) { ok = false; break }
+                    cur = cur[k]
+                } else { ok = false; break }
+            }
+            yield ok ? (typeof cur === 'undefined' ? null : cur) : null
+        }
+    }, {params:[{label:'path'}]}),
+    'delpaths/1': Object.assign(function*(input, conf, args) {
+        for (let plist of args[0].apply(input, conf)) {
+            if (nameType(plist) != 'array')
+                throw 'Paths must be specified as an array'
+            const del = (obj, path) => {
+                if (path.length === 0) return obj
+                const [k, ...rest] = path
+                let t = nameType(obj)
+                if (t == 'array') {
+                    let idx = typeof k=='number'? k : Number(k)
+                    if (idx < 0) idx = obj.length + idx
+                    if (!Number.isInteger(idx) || idx < 0 || idx >= obj.length)
+                        return obj
+                    let out = obj.slice()
+                    if (rest.length===0) {
+                        out.splice(idx,1)
+                    } else {
+                        out[idx] = del(out[idx], rest)
+                    }
+                    return out
+                } else if (t == 'object') {
+                    let key = typeof k=='string'? k : String(k)
+                    if (!obj.hasOwnProperty(key)) return obj
+                    let out = {...obj}
+                    if (rest.length===0) {
+                        delete out[key]
+                    } else {
+                        out[key] = del(out[key], rest)
+                    }
+                    return out
+                }
+                return obj
+            }
+            let out = input
+            for (let p of plist) {
+                if (nameType(p) == 'array')
+                    out = del(out, p)
+            }
+            yield out
+        }
+    }, {params:[{label:'paths'}]}),
     'select/1': Object.assign(function*(input, conf, args) {
         let selector = args[0]
         for (let b of selector.apply(input, conf))
@@ -2419,6 +2500,57 @@ const functions = {
         }
         yield best.value
     }, {params: [{mode: 'defer'}]}),
+
+    'flatten/0': function*(input) {
+        if (nameType(input) != 'array')
+            throw 'can only flatten arrays'
+        const recur = (arr) => arr.reduce((a, v) => {
+            if (nameType(v) == 'array')
+                a.push(...recur(v))
+            else
+                a.push(v)
+            return a
+        }, [])
+        yield recur(input)
+    },
+    'flatten/1': Object.assign(function*(input, conf, args) {
+        if (nameType(input) != 'array')
+            throw 'can only flatten arrays'
+        for (let d of args[0].apply(input, conf)) {
+            if (typeof d != 'number')
+                throw 'flatten depth must be a number'
+            if (d < 0)
+                throw 'flatten depth must not be negative'
+            const step = (arr, depth) => arr.reduce((a, v) => {
+                if (depth > 0 && nameType(v) == 'array')
+                    a.push(...step(v, depth - 1))
+                else
+                    a.push(v)
+                return a
+            }, [])
+            yield step(input, d)
+        }
+    }, {params: [{label: 'depth'}]}),
+
+    'transpose/0': function*(input) {
+        if (nameType(input) != 'array')
+            throw 'can only transpose arrays, not ' + nameType(input)
+        let rows = input
+        let max = 0
+        for (let r of rows) {
+            if (nameType(r) != 'array')
+                throw 'transpose expects an array of arrays'
+            if (r.length > max) max = r.length
+        }
+        let out = []
+        for (let i = 0; i < max; i++) {
+            let row = []
+            for (let r of rows)
+                row.push(typeof r[i] == 'undefined' ? null : r[i])
+            out.push(row)
+        }
+        yield out
+    },
     'explode/0': function*(input, conf) {
         if (nameType(input) != 'string')
             throw 'can only explode string, not ' + nameType(input)
@@ -2456,6 +2588,54 @@ const functions = {
         for (let s of args[0].apply(input, conf))
             yield a.join(s)
     }, {params: [{label: 'delimiter'}]}),
+
+    'gmtime/0': function*(input) {
+        if (typeof input != 'number')
+            throw 'gmtime requires numeric input'
+        const d = new Date(input * 1000)
+        const yday = Math.floor((Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()) -
+            Date.UTC(d.getUTCFullYear(), 0, 1)) / 86400000)
+        yield [d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(),
+               d.getUTCHours(), d.getUTCMinutes(), d.getUTCSeconds(),
+               d.getUTCDay(), yday]
+    },
+    'mktime/0': function*(input) {
+        if (nameType(input) != 'array' || input.some(v => typeof v != 'number'))
+            throw 'mktime requires parsed datetime inputs'
+        const [Y, M, D, h=0, m=0, s=0] = input
+        yield Math.floor(Date.UTC(Y, M, D ?? 1, h, m, s) / 1000)
+    },
+    'strftime/1': Object.assign(function*(input, conf, args) {
+        const makeDate = () => {
+            if (typeof input == 'number')
+                return new Date(input * 1000)
+            if (nameType(input) == 'array' && input.every(v => typeof v == 'number')) {
+                const [Y,M,D,h=0,mi=0,s=0] = input
+                return new Date(Date.UTC(Y, M, D ?? 1, h, mi, s))
+            }
+            throw 'strftime/1 requires parsed datetime inputs'
+        }
+        for (let fmt of args[0].apply(input, conf)) {
+            if (typeof fmt != 'string')
+                throw 'strftime/1 requires a string format'
+            const d = makeDate()
+            const WDAY = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday']
+            const MONTH = ['January','February','March','April','May','June','July','August','September','October','November','December']
+            const pad = n => String(n).padStart(2,'0')
+            const rep = {
+                '%Y': d.getUTCFullYear(),
+                '%m': pad(d.getUTCMonth()+1),
+                '%d': pad(d.getUTCDate()),
+                '%H': pad(d.getUTCHours()),
+                '%M': pad(d.getUTCMinutes()),
+                '%S': pad(d.getUTCSeconds()),
+                '%A': WDAY[d.getUTCDay()],
+                '%B': MONTH[d.getUTCMonth()],
+            }
+            let out = fmt.replace(/%[YmdHMSAB]/g, m => rep[m] ?? m)
+            yield out
+        }
+    }, {params:[{label:'format'}]}),
 
     // --- Additional builtins for jq compatibility ---
     'startswith/1': Object.assign(function*(input, conf, args) {

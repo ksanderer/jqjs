@@ -2933,17 +2933,23 @@ function captureObject(m, input) {
     return obj
 }
 
+function adjustForMarks(str, start, end) {
+    while (end < str.length && /\p{Mark}/u.test(str[end])) end++
+    return [start, end]
+}
+
 function buildMatch(m, input) {
+    const base = adjustForMarks(input, m.indices[0][0], m.indices[0][1])
     const out = {
-        offset: codepointIndex(input, m.indices[0][0]),
-        length: codepointIndex(input, m.indices[0][1]) - codepointIndex(input, m.indices[0][0]),
-        string: input.slice(m.indices[0][0], m.indices[0][1]),
+        offset: codepointIndex(input, base[0]),
+        length: codepointIndex(input, base[1]) - codepointIndex(input, base[0]),
+        string: input.slice(base[0], base[1]),
         captures: []
     }
     const groupsByName = m.indices.groups || {}
     const used = new Set()
     for (let i=1;i<m.indices.length;i++) {
-        const idx = m.indices[i]
+        let idx = m.indices[i]
         let name = null
         for (let [n,v] of Object.entries(groupsByName)) {
             if (used.has(n)) continue
@@ -2953,6 +2959,7 @@ function buildMatch(m, input) {
         if (!idx) {
             out.captures.push({offset:-1,string:null,length:0,name})
         } else {
+            idx = adjustForMarks(input, idx[0], idx[1])
             out.captures.push({
                 offset: codepointIndex(input, idx[0]),
                 length: codepointIndex(input, idx[1]) - codepointIndex(input, idx[0]),

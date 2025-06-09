@@ -2699,6 +2699,108 @@ const functions = {
             throw 'trim input must be a string'
         yield input.trimEnd()
     },
+    // Regular expression helpers
+    'match/1': Object.assign(function*(input, conf, args) {
+        for (let spec of args[0].apply(input, conf)) {
+            let {re, global, noEmpty} = buildRegex(spec)
+            yield* runMatch(input, re, global, noEmpty)
+        }
+    }, {params:[{label:'regex'}]}),
+    'match/2': function*(input, conf, args) {
+        for (let spec of args[0].apply(input, conf))
+            for (let flags of args[1].apply(input, conf)) {
+                let {re, global, noEmpty} = buildRegex(spec, flags)
+                yield* runMatch(input, re, global, noEmpty)
+            }
+    },
+    'capture/1': Object.assign(function*(input, conf, args) {
+        for (let spec of args[0].apply(input, conf)) {
+            let {re, noEmpty} = buildRegex(spec)
+            const m = re.exec(String(input))
+            if (!m || (noEmpty && m[0].length===0)) continue
+            yield captureObject(m, String(input))
+        }
+    }, {params:[{label:'regex'}]}),
+    'capture/2': function*(input, conf, args) {
+        for (let spec of args[0].apply(input, conf))
+            for (let flags of args[1].apply(input, conf)) {
+                let {re, noEmpty} = buildRegex(spec, flags)
+                const m = re.exec(String(input))
+                if (!m || (noEmpty && m[0].length===0)) continue
+                yield captureObject(m, String(input))
+            }
+    },
+    'test/1': Object.assign(function*(input, conf, args) {
+        for (let spec of args[0].apply(input, conf)) {
+            let {re, noEmpty} = buildRegex(spec)
+            const m = re.exec(String(input))
+            yield !!(m && !(noEmpty && m[0].length===0))
+        }
+    }, {params:[{label:'regex'}]}),
+    'test/2': function*(input, conf, args) {
+        for (let spec of args[0].apply(input, conf))
+            for (let flags of args[1].apply(input, conf)) {
+                let {re, noEmpty} = buildRegex(spec, flags)
+                const m = re.exec(String(input))
+                yield !!(m && !(noEmpty && m[0].length===0))
+            }
+    },
+    'sub/2': Object.assign(function*(input, conf, args) {
+        let replF = args[1]
+        for (let spec of args[0].apply(input, conf)) {
+            let {re, noEmpty} = buildRegex(spec)
+            yield subHelper(String(input), re, replF, conf, noEmpty, false)
+        }
+    }, {params:[{label:'regex'},{label:'string',mode:'defer'}]}),
+    'sub/3': function*(input, conf, args) {
+        let replF = args[1]
+        for (let spec of args[0].apply(input, conf))
+            for (let flags of args[2].apply(input, conf)) {
+                let {re, noEmpty} = buildRegex(spec, flags)
+                yield subHelper(String(input), re, replF, conf, noEmpty, false)
+            }
+    },
+    'gsub/2': Object.assign(function*(input, conf, args) {
+        let replF = args[1]
+        for (let spec of args[0].apply(input, conf)) {
+            let {re, noEmpty} = buildRegex(spec)
+            yield subHelper(String(input), re, replF, conf, noEmpty, true)
+        }
+    }, {params:[{label:'regex'},{label:'string',mode:'defer'}]}),
+    'gsub/3': function*(input, conf, args) {
+        let replF = args[1]
+        for (let spec of args[0].apply(input, conf))
+            for (let flags of args[2].apply(input, conf)) {
+                let {re, noEmpty} = buildRegex(spec, flags)
+                yield subHelper(String(input), re, replF, conf, noEmpty, true)
+            }
+    },
+    'scan/1': Object.assign(function*(input, conf, args) {
+        for (let spec of args[0].apply(input, conf)) {
+            let {re, noEmpty} = buildRegex(spec, 'g')
+            yield* scanHelper(String(input), re, noEmpty)
+        }
+    }, {params:[{label:'regex'}]}),
+    'scan/2': function*(input, conf, args) {
+        for (let spec of args[0].apply(input, conf))
+            for (let flags of args[1].apply(input, conf)) {
+                let {re, noEmpty} = buildRegex(spec, flags.includes('g')?flags:flags+'g')
+                yield* scanHelper(String(input), re, noEmpty)
+            }
+    },
+    'splits/1': Object.assign(function*(input, conf, args) {
+        for (let spec of args[0].apply(input, conf)) {
+            let {re, noEmpty} = buildRegex(spec, 'g')
+            yield* splitsHelper(String(input), re, noEmpty)
+        }
+    }, {params:[{label:'regex'}]}),
+    'splits/2': function*(input, conf, args) {
+        for (let spec of args[0].apply(input, conf))
+            for (let flags of args[1].apply(input, conf)) {
+                let {re, noEmpty} = buildRegex(spec, flags.includes('g')?flags:flags+'g')
+                yield* splitsHelper(String(input), re, noEmpty)
+            }
+    },
     'nan/0': function*() {
         yield NaN
     },
@@ -2793,6 +2895,158 @@ const functions = {
         }
         yield* rec(input)
     }, {params: [{mode: 'defer'}]}),
+}
+
+function buildRegex(spec, extraFlags='') {
+    let pattern, flags
+    if (Array.isArray(spec)) {
+        pattern = String(spec[0])
+        flags = (spec[1] || '') + extraFlags
+    } else {
+        pattern = String(spec)
+        flags = extraFlags
+    }
+    let noEmpty = flags.includes('n')
+    flags = flags.replace('n','')
+    let global = flags.includes('g')
+    if (!flags.includes('d')) flags += 'd'
+    if (!flags.includes('u')) flags += 'u'
+    const re = new RegExp(pattern, flags)
+    return {re, global, noEmpty}
+}
+
+function codepointIndex(str, idx) {
+    return Array.from(str.slice(0, idx)).length
+}
+
+function codepointLength(str) {
+    return Array.from(str).length
+}
+
+function captureObject(m, input) {
+    let obj = {}
+    const groups = m.indices.groups || {}
+    for (let [name, idx] of Object.entries(groups)) {
+        if (!idx || idx[0] === -1) obj[name] = null
+        else obj[name] = input.slice(idx[0], idx[1])
+    }
+    return obj
+}
+
+function adjustForMarks(str, start, end) {
+    while (end < str.length && /\p{Mark}/u.test(str[end])) end++
+    return [start, end]
+}
+
+function buildMatch(m, input) {
+    const base = adjustForMarks(input, m.indices[0][0], m.indices[0][1])
+    const out = {
+        offset: codepointIndex(input, base[0]),
+        length: codepointIndex(input, base[1]) - codepointIndex(input, base[0]),
+        string: input.slice(base[0], base[1]),
+        captures: []
+    }
+    const groupsByName = m.indices.groups || {}
+    const used = new Set()
+    for (let i=1;i<m.indices.length;i++) {
+        let idx = m.indices[i]
+        let name = null
+        for (let [n,v] of Object.entries(groupsByName)) {
+            if (used.has(n)) continue
+            if (!v && idx===undefined) { name=n; used.add(n); break }
+            if (v && idx && v[0]===idx[0] && v[1]===idx[1]) { name=n; used.add(n); break }
+        }
+        if (!idx) {
+            out.captures.push({offset:-1,string:null,length:0,name})
+        } else {
+            idx = adjustForMarks(input, idx[0], idx[1])
+            out.captures.push({
+                offset: codepointIndex(input, idx[0]),
+                length: codepointIndex(input, idx[1]) - codepointIndex(input, idx[0]),
+                string: input.slice(idx[0], idx[1]),
+                name
+            })
+        }
+    }
+    return out
+}
+
+function* runMatch(input, re, global, noEmpty) {
+    if (global) {
+        re.lastIndex = 0
+        let m
+        while ((m = re.exec(input)) !== null) {
+            if (noEmpty && m[0].length===0) {
+                if (re.lastIndex === input.length) break
+                re.lastIndex++
+                continue
+            }
+            yield buildMatch(m, input)
+            if (m[0].length===0) re.lastIndex++
+        }
+    } else {
+        const m = re.exec(input)
+        if (m && !(noEmpty && m[0].length===0))
+            yield buildMatch(m, input)
+    }
+}
+
+function applyReplacement(repl, matchObj, conf) {
+    const parts = Array.from(repl.apply(matchObj, conf))
+    return parts.join('')
+}
+
+function subHelper(input, re, repl, conf, noEmpty, global) {
+    let result = ''
+    let last = 0
+    re.lastIndex = 0
+    let m
+    while ((m = re.exec(input)) !== null) {
+        if (noEmpty && m[0].length===0) {
+            if (re.lastIndex === input.length) break
+            re.lastIndex++
+            continue
+        }
+        result += input.slice(last, m.index)
+        const matchObj = buildMatch(m, input)
+        result += applyReplacement(repl, matchObj, conf)
+        last = re.lastIndex
+        if (!global) break
+        if (m[0].length===0) re.lastIndex++
+    }
+    result += input.slice(last)
+    return result
+}
+
+function* scanHelper(input, re, noEmpty) {
+    re.lastIndex = 0
+    let m
+    while ((m = re.exec(input)) !== null) {
+        if (noEmpty && m[0].length===0) {
+            if (re.lastIndex === input.length) break
+            re.lastIndex++
+            continue
+        }
+        yield m[0]
+        if (m[0].length===0) re.lastIndex++
+    }
+}
+
+function* splitsHelper(input, re, noEmpty) {
+    let last = 0
+    re.lastIndex = 0
+    let m
+    while ((m = re.exec(input)) !== null) {
+        if (noEmpty && m[0].length===0) {
+            if (re.lastIndex === input.length) break
+            re.lastIndex++
+            continue
+        }
+        yield input.slice(last, m.index)
+        last = re.lastIndex
+        if (m[0].length===0) re.lastIndex++
+    }
+    yield input.slice(last)
 }
 
 // Implements the containment algorithm, returning whether haystack

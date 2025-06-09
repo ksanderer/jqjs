@@ -95,8 +95,12 @@ function escapeString(s) {
     s = s.replace(/\\/g, '\\\\')
     s = s.replace(/"/g, '\\"')
     s = s.replace(/\n/g, '\\n')
+    s = s.replace(/\r/g, '\\r')
+    s = s.replace(/\t/g, '\\t')
+    s = s.replace(/\u0008/g, '\\b')
+    s = s.replace(/\f/g, '\\f')
     s = s.replace(/[\x00-\x1f]/g,
-        x => '\\u00' + x.charCodeAt(0).toString(16).padStart(2, '0'))
+        x => '\\u' + x.charCodeAt(0).toString(16).padStart(4, '0'))
     return s
 }
 
@@ -1953,13 +1957,22 @@ const formats = {
     html(v) {
         if (typeof v != 'string')
             v = prettyPrint(v, '', '', '')
-        return v.replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(
-            /&/g, '&amp;').replace(/'/g, '&apos;').replace(/"/g, '&quot;')
+        return v.replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/'/g, '&apos;')
+            .replace(/"/g, '&quot;')
     },
     uri(v) {
         if (typeof v != 'string')
             v = prettyPrint(v, '', '', '')
-        return escape(v)
+        return encodeURIComponent(v).replace(/[!'()*]/g,
+            c => '%' + c.charCodeAt(0).toString(16).toUpperCase())
+    },
+    urid(v) {
+        if (typeof v != 'string')
+            throw 'can only URI-decode strings'
+        return decodeURIComponent(v)
     },
     csv(v) {
         if (nameType(v) != 'array')
@@ -1978,9 +1991,14 @@ const formats = {
     tsv(v) {
         if (nameType(v) != 'array')
             throw 'cannot tsv-format ' + nameType(v) + ', only array'
+        const esc = s => s
+            .replace(/\\/g, '\\\\')
+            .replace(/\t/g, '\\t')
+            .replace(/\n/g, '\\n')
+            .replace(/\r/g, '\\r')
         return v.map(x => {
             if (typeof x == 'string')
-                return escapeString(x)
+                return esc(x)
             else if (typeof x == 'number')
                 return '' + x
             else if (x === null)
@@ -1992,17 +2010,21 @@ const formats = {
     base64(v) {
         if (typeof v != 'string')
             v = prettyPrint(v, '', '', '')
-        return btoa(v)
+        if (typeof Buffer != 'undefined')
+            return Buffer.from(v, 'utf8').toString('base64')
+        return btoa(unescape(encodeURIComponent(v)))
     },
     base64d(v) {
         if (typeof v != 'string')
             throw 'can only base64-decode strings'
-        return atob(v)
+        if (typeof Buffer != 'undefined')
+            return Buffer.from(v, 'base64').toString('utf8')
+        return decodeURIComponent(escape(atob(v)))
     },
     sh(v) {
         let t = nameType(v)
         if (t == 'string')
-            return "'" + t.replace(/'/g, "'\\''") + "'"
+            return "'" + v.replace(/'/g, "'\\''") + "'"
         else if (t == 'number')
             return '' + v
         else if (t == 'boolean')

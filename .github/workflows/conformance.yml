@@ -1,0 +1,47 @@
+name: Conformance
+
+on:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v3
+        with:
+          node-version: 20
+      - run: npm install
+      - id: tests
+        run: |
+          NODE_OPTIONS=--max-old-space-size=4096 npm test -- --run > results.log || true
+          grep 'Conformance:' results.log || true
+      - id: parse
+        run: |
+          line=$(grep 'Conformance:' results.log || echo '')
+          echo "line=$line"
+          percent=$(echo "$line" | awk '{print $2}' | tr -d '%')
+          passed=$(echo "$line" | awk -F'[()]' '{print $2}' | cut -d/ -f1)
+          total=$(echo "$line" | awk -F'[()]' '{print $2}' | cut -d/ -f2)
+          failed=$((total - passed))
+          echo "percent=$percent" >> $GITHUB_OUTPUT
+          echo "passed=$passed" >> $GITHUB_OUTPUT
+          echo "failed=$failed" >> $GITHUB_OUTPUT
+      - uses: actions/github-script@v7
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const passed = process.env.PASSED;
+            const failed = process.env.FAILED;
+            const percent = process.env.PERCENT;
+            const body = `Conformance: ${passed} / ${failed} (${percent}%)`;
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body
+            });
+        env:
+          PASSED: ${{ steps.parse.outputs.passed }}
+          FAILED: ${{ steps.parse.outputs.failed }}
+          PERCENT: ${{ steps.parse.outputs.percent }}

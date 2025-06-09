@@ -4,7 +4,8 @@
   "description": "jqjs is a JavaScript implementation of the [jq] query language. It implements the core language features in pure JavaScript.",
   "main": "jq.js",
   "scripts": {
-    "test": "vitest"
+    "test": "vitest",
+    "vitest": "node scripts/vitest.js"
   },
   "keywords": [],
   "author": "",

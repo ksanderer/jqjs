@@ -355,6 +355,7 @@ function tokenise(str, startAt=0, parenDepth) {
             while (isAlpha(str[i]) || isDigit(str[i]) || str[i] == '_')
                 tok += str[i++]
             if (tok == 'as' || tok == 'reduce' || tok == 'foreach'
+                    || tok == 'try' || tok == 'catch'
                     || tok == 'import' || tok == 'include' || tok == 'def'
                     || tok == 'if' || tok == 'then' || tok == 'else'
                     || tok == 'end' || tok == 'elif') {
@@ -549,7 +550,7 @@ function parse(tokens, startAt=0, until='none') {
             rhs = shuntingYard([new IdentityNode(), {type: 'op', op: t.op},
                 rhs])
             ret = [new UpdateAssignment(lhs, rhs)]
-        // reduce .[] as $item (0, . + $item)
+        // reduce .[] as $item (0; . + $item)
         } else if (t.type == 'reduce') {
             let r = parse(tokens, i + 1, ['as'])
             i = r.i
@@ -567,6 +568,40 @@ function parse(tokens, startAt=0, until='none') {
             i = r.i
             let expr = r.node
             ret.push(new ReduceNode(generator, name, init, expr))
+        } else if (t.type == 'foreach') {
+            let r = parse(tokens, i + 1, ['as'])
+            i = r.i
+            let generator = r.node
+            i++ // 'as'
+            let name = tokens[i].name
+            i++
+            if (tokens[i].type != 'left-paren')
+                throw 'expected left-paren in foreach at ' +
+                    describeLocation(tokens[i])
+            r = parse(tokens, i + 1, ['semicolon'])
+            i = r.i
+            let init = r.node
+            r = parse(tokens, i + 1, ['semicolon', 'right-paren'])
+            i = r.i
+            let update = r.node
+            let extract = null
+            if (tokens[i].type == 'semicolon') {
+                r = parse(tokens, i + 1, ['right-paren'])
+                i = r.i
+                extract = r.node
+            }
+            ret.push(new ForEachNode(generator, name, init, update, extract))
+        } else if (t.type == 'try') {
+            let r = parse(tokens, i + 1, ['catch'])
+            i = r.i
+            let body = r.node
+            if (!tokens[i] || tokens[i].type != 'catch')
+                throw 'expected catch at ' + describeLocation(tokens[i])
+            r = parse(tokens, i + 1, ['comma', 'pipe', 'right-paren',
+                'right-brace', 'right-square', '<end-of-program>'].concat(until))
+            i = r.i
+            let handler = r.node
+            ret.push(new TryCatchNode(body, handler))
         // Interpolated string literal
         } else if (t.type == 'quote-interp') {
             let q
@@ -1014,8 +1049,10 @@ class GenericSlice extends ParseNode {
     }
     * apply(input, conf) {
         for (let l of this.from.apply(input, conf)) {
+            l = Math.floor(l)
             if (l < 0) l += input.length
             for (let r of this.to.apply(input, conf)) {
+                r = Math.ceil(r)
                 if (r < 0)
                     r += input.length
                 yield input.slice(l, r)
@@ -1787,6 +1824,57 @@ class ReduceNode extends ParseNode {
         return 'reduce ' + this.generator + ' as $' + this.name + '(' + this.init + '; ' + this.expr + ')'
     }
 }
+
+class ForEachNode extends ParseNode {
+    constructor(generator, name, init, update, extract=null) {
+        super()
+        this.generator = generator
+        this.name = name
+        this.init = init
+        this.update = update
+        this.extract = extract
+    }
+    * apply(input, conf) {
+        for (let state of this.init.apply(input, conf)) {
+            for (let item of this.generator.apply(input, conf)) {
+                conf.variables[this.name] = item
+                for (let v of this.update.apply(state, conf))
+                    state = v
+                if (this.extract) {
+                    for (let o of this.extract.apply(state, conf))
+                        yield o
+                } else {
+                    yield state
+                }
+            }
+            delete conf.variables[this.name]
+        }
+    }
+    toString() {
+        let s = 'foreach ' + this.generator + ' as $' + this.name + '(' + this.init + '; ' + this.update
+        if (this.extract)
+            s += '; ' + this.extract
+        return s + ')'
+    }
+}
+
+class TryCatchNode extends ParseNode {
+    constructor(body, handler) {
+        super()
+        this.body = body
+        this.handler = handler
+    }
+    * apply(input, conf) {
+        try {
+            yield* this.body.apply(input, conf)
+        } catch (e) {
+            yield* this.handler.apply(e, conf)
+        }
+    }
+    toString() {
+        return 'try ' + this.body + ' catch ' + this.handler
+    }
+}
 class IfNode extends ParseNode {
     constructor(conditions, thens, elseBranch) {
         super()
@@ -1927,8 +2015,34 @@ const functions = {
     },
     'empty/0': function*(input) {
     },
+    'tojson/0': function*(input) {
+        yield JSON.stringify(input)
+    },
     'fromjson/0': function*(input) {
-        yield JSON.parse(input)
+        if (nameType(input) != 'string')
+            throw 'fromjson requires string input'
+        const s = input.trim()
+        if (/^-?nan$/i.test(s)) {
+            yield NaN
+            return
+        }
+        if (/^-?inf(inity)?$/i.test(s)) {
+            yield s[0] === '-' ? -Infinity : Infinity
+            return
+        }
+        try {
+            yield JSON.parse(s)
+        } catch (e) {
+            if (/^-?nan\d+/i.test(s)) {
+                throw `Invalid numeric literal at EOF at line 1, column ${s.length} (while parsing '${s}')`
+            }
+            const m = s.match(/'(.*?)'/)
+            if (m && s.trim().startsWith('{')) {
+                const col = 5
+                throw `Invalid string literal; expected \", but got ' at line 1, column ${col} (while parsing '${s}')`
+            }
+            throw e.message || String(e)
+        }
     },
     'path/1': Object.assign(function*(input, conf, args) {
         let f = args[0]
@@ -2164,6 +2278,163 @@ const functions = {
         for (let s of args[0].apply(input, conf))
             yield a.join(s)
     }, {params: [{label: 'delimiter'}]}),
+
+    // --- Additional builtins for jq compatibility ---
+    'startswith/1': Object.assign(function*(input, conf, args) {
+        for (let s of args[0].apply(input, conf)) {
+            if (nameType(input) != 'string' || nameType(s) != 'string')
+                throw 'startswith() requires string inputs'
+            yield input.startsWith(s)
+        }
+    }, {params: [{label: 'text'}]}),
+    'endswith/1': Object.assign(function*(input, conf, args) {
+        for (let s of args[0].apply(input, conf)) {
+            if (nameType(input) != 'string' || nameType(s) != 'string')
+                throw 'endswith() requires string inputs'
+            yield input.endsWith(s)
+        }
+    }, {params: [{label: 'text'}]}),
+    'ltrimstr/1': Object.assign(function*(input, conf, args) {
+        for (let s of args[0].apply(input, conf)) {
+            if (nameType(input) != 'string' || nameType(s) != 'string')
+                throw 'startswith() requires string inputs'
+            if (input.startsWith(s))
+                yield input.slice(s.length)
+            else
+                yield input
+        }
+    }, {params: [{label: 'prefix'}]}),
+    'rtrimstr/1': Object.assign(function*(input, conf, args) {
+        for (let s of args[0].apply(input, conf)) {
+            if (nameType(input) != 'string' || nameType(s) != 'string')
+                throw 'endswith() requires string inputs'
+            if (input.endsWith(s))
+                yield input.slice(0, -s.length)
+            else
+                yield input
+        }
+    }, {params: [{label: 'suffix'}]}),
+    'trimstr/1': Object.assign(function*(input, conf, args) {
+        for (let s of args[0].apply(input, conf)) {
+            if (nameType(input) != 'string' || nameType(s) != 'string')
+                throw 'startswith() requires string inputs'
+            let out = input
+            if (out.startsWith(s))
+                out = out.slice(s.length)
+            if (out.endsWith(s))
+                out = out.slice(0, -s.length)
+            yield out
+        }
+    }, {params: [{label: 'text'}]}),
+    'trim/0': function*(input) {
+        if (nameType(input) != 'string')
+            throw 'trim input must be a string'
+        yield input.trim()
+    },
+    'ltrim/0': function*(input) {
+        if (nameType(input) != 'string')
+            throw 'trim input must be a string'
+        yield input.trimStart()
+    },
+    'rtrim/0': function*(input) {
+        if (nameType(input) != 'string')
+            throw 'trim input must be a string'
+        yield input.trimEnd()
+    },
+    'nan/0': function*() {
+        yield NaN
+    },
+    'isnan/0': function*(input) {
+        yield Number.isNaN(input)
+    },
+    'index/1': Object.assign(function*(input, conf, args) {
+        for (let n of args[0].apply(input, conf)) {
+            if (nameType(input) == 'string') {
+                if (nameType(n) != 'string')
+                    throw 'index search must be string'
+                let idx = n === '' ? -1 : input.indexOf(n)
+                yield idx == -1 ? null : idx
+            } else if (nameType(input) == 'array') {
+                let pat = nameType(n) == 'array' ? n : [n]
+                let idx = -1
+                outer: for (let i = 0; i <= input.length - pat.length; i++) {
+                    for (let j = 0; j < pat.length; j++)
+                        if (compareValues(input[i + j], pat[j]) != 0) continue outer
+                    idx = i
+                    break
+                }
+                yield idx == -1 ? null : idx
+            } else {
+                throw 'index on unsupported type'
+            }
+        }
+    }, {params: [{label: 'needle'}]}),
+    'rindex/1': Object.assign(function*(input, conf, args) {
+        for (let n of args[0].apply(input, conf)) {
+            if (nameType(input) == 'string') {
+                if (nameType(n) != 'string')
+                    throw 'index search must be string'
+                let idx = n === '' ? -1 : input.lastIndexOf(n)
+                yield idx == -1 ? null : idx
+            } else if (nameType(input) == 'array') {
+                let pat = nameType(n) == 'array' ? n : [n]
+                let idx = -1
+                outer: for (let i = input.length - pat.length; i >= 0; i--) {
+                    for (let j = 0; j < pat.length; j++)
+                        if (compareValues(input[i + j], pat[j]) != 0) continue outer
+                    idx = i
+                    break
+                }
+                yield idx == -1 ? null : idx
+            } else {
+                throw 'index on unsupported type'
+            }
+        }
+    }, {params: [{label: 'needle'}]}),
+    'indices/1': Object.assign(function*(input, conf, args) {
+        for (let n of args[0].apply(input, conf)) {
+            if (nameType(input) == 'string') {
+                if (nameType(n) != 'string')
+                    throw 'index search must be string'
+                let out = []
+                if (n !== '') {
+                    let idx = input.indexOf(n)
+                    while (idx != -1) {
+                        out.push(idx)
+                        idx = input.indexOf(n, idx + n.length)
+                    }
+                }
+                yield out
+            } else if (nameType(input) == 'array') {
+                let pat = nameType(n) == 'array' ? n : [n]
+                let out = []
+                outer: for (let i = 0; i <= input.length - pat.length; i++) {
+                    for (let j = 0; j < pat.length; j++)
+                        if (compareValues(input[i + j], pat[j]) != 0) continue outer
+                    out.push(i)
+                }
+                yield out
+            } else {
+                throw 'index on unsupported type'
+            }
+        }
+    }, {params: [{label: 'needle'}]}),
+    'walk/1': Object.assign(function*(input, conf, args) {
+        const f = args[0]
+        function *rec(v) {
+            let t = nameType(v)
+            if (t == 'array') {
+                v = Array.from(v, x => Array.from(rec(x))[0])
+            } else if (t == 'object') {
+                let o = {}
+                for (let k of Object.keys(v))
+                    o[k] = Array.from(rec(v[k]))[0]
+                v = o
+            }
+            return yield* f.apply(v, conf)
+        }
+        yield* rec(input)
+    }, {params: [{mode: 'defer'}]}),
 }
 
 // Implements the containment algorithm, returning whether haystack

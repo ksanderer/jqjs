@@ -4,15 +4,18 @@ import { compile } from '../jq.js';
 
 // Parse jq.test file
 const lines = fs.readFileSync('./jq.test', 'utf8').split(/\r?\n/);
+
 function parseTests() {
   let cases = [];
   let i = 0;
   function skip() {
-    while (i < lines.length && (lines[i].trim() === '' || lines[i].startsWith('#'))) i++;
+    while (i < lines.length && (lines[i].trim() === '' || lines[i].startsWith('#')))
+      i++;
   }
   while (i < lines.length) {
     skip();
     if (i >= lines.length) break;
+    const startLine = i + 1;
     if (lines[i] === '%%FAIL') {
       // skip failing tests
       i++;
@@ -27,11 +30,18 @@ function parseTests() {
     while (i < lines.length && lines[i].trim() !== '' && !lines[i].startsWith('#')) {
       outputs.push(lines[i++]);
     }
-    cases.push({ prog, input, outputs });
+    cases.push({ prog, input, outputs, line: startLine });
   }
   return cases;
 }
-const cases = parseTests();
+
+let cases = parseTests();
+if (process.env.TEST_LINES) {
+  const linesWanted = new Set(
+    process.env.TEST_LINES.split(',').map((l) => Number(l.trim())).filter(Boolean)
+  );
+  cases = cases.filter((tc) => linesWanted.has(tc.line));
+}
 
 let total = 0;
 let passed = 0;
@@ -44,7 +54,14 @@ describe('jq.test', () => {
         if (c.task.result && c.task.result.state === 'pass') passed++;
       });
       const f = compile(tc.prog);
-      const actual = Array.from(f(JSON.parse(tc.input))).map(v => JSON.stringify(v));
+      const parseInput = (str) => {
+        try {
+          return JSON.parse(str);
+        } catch {
+          return new Function('const nan=NaN; return (' + str + ')')();
+        }
+      };
+      const actual = Array.from(f(parseInput(tc.input))).map(v => JSON.stringify(v));
       expect(actual).toEqual(tc.outputs);
     });
   });

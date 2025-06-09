@@ -2260,6 +2260,32 @@ const functions = {
     'tonumber/0': function*(input) {
         yield Number.parseFloat(input)
     },
+    'pow/2': function*(input, conf, args) {
+        for (let a of args[0].apply(input, conf))
+            for (let b of args[1].apply(input, conf))
+                yield Math.pow(a, b)
+    },
+    'sqrt/0': function*(input) {
+        yield Math.sqrt(input)
+    },
+    'sin/0': function*(input) {
+        yield Math.sin(input)
+    },
+    'cos/0': function*(input) {
+        yield Math.cos(input)
+    },
+    'abs/0': function*(input) {
+        if (typeof input == 'number')
+            yield Math.abs(input)
+        else
+            yield input
+    },
+    'fabs/0': function*(input) {
+        if (typeof input == 'number')
+            yield Math.abs(input)
+        else
+            yield input
+    },
     'reverse/0': function*(input) {
         if (nameType(input) != 'array')
             throw 'can only reverse arrays, not ' + nameType(input)

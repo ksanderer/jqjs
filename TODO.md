@@ -18,4 +18,4 @@
 - [ ] Implement array transforms `flatten/1` and `transpose/0` (cases 361-367).
 - [ ] Provide search helpers `IN/1`, `IN/2`, `JOIN/2`, and `bsearch/1` (cases 369-417).
 - [ ] Add date/time functions such as `strftime/1`, `mktime/0`, and `gmtime/0` (cases 372-382).
-- [ ] Add math built-ins `pow/2`, `sqrt/0`, `sin/0`, `cos/0`, and `abs/0` (cases 269 and 409+).
+- [x] Add math built-ins `pow/2`, `sqrt/0`, `sin/0`, `cos/0`, and `abs/0` (cases 269 and 409+).

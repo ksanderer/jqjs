@@ -10,7 +10,7 @@
 - [x] Implement `try ... catch` error handling.
 
 - [x] Provide built-ins `tojson/0` and `fromjson/0` for encoding and decoding JSON (see failing cases 19 and 493).
-- [ ] Support string format modifiers such as `@base64` and `@base64d` (cases 13-15).
+- [x] Support string format modifiers such as `@base64` and `@base64d` (cases 13-15).
 - [ ] Implement array grouping and ordering helpers `group_by/1`, `unique/0`, `min/0`, `max/0`, `min_by/1`, and `max_by/1` (cases 333-337).
 - [ ] Support update assignment `=` and functions like `setpath/2` (cases 339, 488, 498).
 - [ ] Provide object entry utilities `with_entries/1` and `from_entries/0` (cases 341-343).

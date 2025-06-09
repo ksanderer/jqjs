@@ -2274,50 +2274,53 @@ const functions = {
     'sort_by/1': Object.assign(function*(input, conf, args) {
         if (nameType(input) != 'array')
             throw 'can only sort arrays, not ' + nameType(input)
-        let key = args[0]
-        let r = input.map(v => {
-            let kv = Array.from(key.apply(v, conf))
-            let k = kv.length > 1 ? kv : kv[0]
-            return {key: k, value: v}
+        const key = args[0]
+        const pairs = input.map(v => {
+            const all = Array.from(key.apply(v, conf))
+            const k = all.length > 1 ? all : all[0]
+            return { key: k, value: v }
         })
-        r.sort((a, b) => compareValues(a.key, b.key))
-        yield r.map(a => a.value)
+        pairs.sort((a, b) => compareValues(a.key, b.key))
+        yield pairs.map(p => p.value)
     }, {params: [{mode: 'defer'}]}),
+
     'group_by/1': Object.assign(function*(input, conf, args) {
         if (nameType(input) != 'array')
             throw 'can only group arrays, not ' + nameType(input)
-        let key = args[0]
-        let r = input.map(v => {
-            let kv = Array.from(key.apply(v, conf))
-            let k = kv.length > 1 ? kv : kv[0]
-            return {key: k, value: v}
+        const key = args[0]
+        const pairs = input.map(v => {
+            const all = Array.from(key.apply(v, conf))
+            const k = all.length > 1 ? all : all[0]
+            return { key: k, value: v }
         })
-        r.sort((a, b) => compareValues(a.key, b.key))
-        let out = []
+        pairs.sort((a, b) => compareValues(a.key, b.key))
+        const out = []
         let cur = []
-        for (let i = 0; i < r.length; i++) {
-            if (i === 0 || compareValues(r[i].key, r[i-1].key) != 0) {
+        for (let i = 0; i < pairs.length; i++) {
+            if (i === 0 || compareValues(pairs[i].key, pairs[i-1].key) !== 0) {
                 if (i !== 0) out.push(cur)
-                cur = [r[i].value]
+                cur = [pairs[i].value]
             } else {
-                cur.push(r[i].value)
+                cur.push(pairs[i].value)
             }
         }
-        if (r.length) out.push(cur)
+        if (pairs.length) out.push(cur)
         yield out
     }, {params: [{mode: 'defer'}]}),
+
     'unique/0': function*(input) {
         if (nameType(input) != 'array')
             throw 'can only unique arrays, not ' + nameType(input)
-        let r = Array.from(input)
+        const r = Array.from(input)
         r.sort(compareValues)
-        let out = []
+        const out = []
         for (let i = 0; i < r.length; i++) {
-            if (i === 0 || compareValues(r[i], r[i-1]) != 0)
+            if (i === 0 || compareValues(r[i], r[i-1]) !== 0)
                 out.push(r[i])
         }
         yield out
     },
+
     'min/0': function*(input) {
         if (nameType(input) != 'array')
             throw 'can only compute min of arrays, not ' + nameType(input)
@@ -2328,6 +2331,7 @@ const functions = {
                 m = input[i]
         yield m
     },
+
     'max/0': function*(input) {
         if (nameType(input) != 'array')
             throw 'can only compute max of arrays, not ' + nameType(input)
@@ -2338,35 +2342,37 @@ const functions = {
                 m = input[i]
         yield m
     },
+
     'min_by/1': Object.assign(function*(input, conf, args) {
         if (nameType(input) != 'array')
             throw 'can only min arrays, not ' + nameType(input)
-        let keyF = args[0]
+        const keyF = args[0]
         if (input.length === 0) return yield null
         let best = {
             key: keyF.apply(input[0], conf).next().value,
             value: input[0]
         }
         for (let i = 1; i < input.length; i++) {
-            let k = keyF.apply(input[i], conf).next().value
+            const k = keyF.apply(input[i], conf).next().value
             if (compareValues(k, best.key) < 0)
-                best = {key: k, value: input[i]}
+                best = { key: k, value: input[i] }
         }
         yield best.value
     }, {params: [{mode: 'defer'}]}),
+
     'max_by/1': Object.assign(function*(input, conf, args) {
         if (nameType(input) != 'array')
             throw 'can only max arrays, not ' + nameType(input)
-        let keyF = args[0]
+        const keyF = args[0]
         if (input.length === 0) return yield null
         let best = {
             key: keyF.apply(input[0], conf).next().value,
             value: input[0]
         }
         for (let i = 1; i < input.length; i++) {
-            let k = keyF.apply(input[i], conf).next().value
+            const k = keyF.apply(input[i], conf).next().value
             if (compareValues(k, best.key) >= 0)
-                best = {key: k, value: input[i]}
+                best = { key: k, value: input[i] }
         }
         yield best.value
     }, {params: [{mode: 'defer'}]}),

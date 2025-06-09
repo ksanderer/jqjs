@@ -61,8 +61,9 @@ describe('jq.test', () => {
           return new Function('const nan=NaN; return (' + str + ')')();
         }
       };
+      const expected = tc.outputs.map(o => JSON.stringify(parseInput(o)));
       const actual = Array.from(f(parseInput(tc.input))).map(v => JSON.stringify(v));
-      expect(actual).toEqual(tc.outputs);
+      expect(actual).toEqual(expected);
     });
   });
 

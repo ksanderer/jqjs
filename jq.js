@@ -95,8 +95,12 @@ function escapeString(s) {
     s = s.replace(/\\/g, '\\\\')
     s = s.replace(/"/g, '\\"')
     s = s.replace(/\n/g, '\\n')
+    s = s.replace(/\r/g, '\\r')
+    s = s.replace(/\t/g, '\\t')
+    s = s.replace(/\u0008/g, '\\b')
+    s = s.replace(/\f/g, '\\f')
     s = s.replace(/[\x00-\x1f]/g,
-        x => '\\u00' + x.charCodeAt(0).toString(16).padStart(2, '0'))
+        x => '\\u' + x.charCodeAt(0).toString(16).padStart(4, '0'))
     return s
 }
 
@@ -385,6 +389,7 @@ function describeLocation(token) {
 // token stream and node is one of the filtering nodes defined below.
 // Returns at end of stream or when a token of type until is found.
 function parse(tokens, startAt=0, until='none') {
+    if (!Array.isArray(until)) until = [until]
     let i = startAt
     let t = tokens[i]
     let ret = []
@@ -592,15 +597,19 @@ function parse(tokens, startAt=0, until='none') {
             }
             ret.push(new ForEachNode(generator, name, init, update, extract))
         } else if (t.type == 'try') {
-            let r = parse(tokens, i + 1, ['catch'])
+            let u = Array.isArray(until) ? until : [until]
+            let r = parse(tokens, i + 1, ['catch'].concat(u))
             i = r.i
             let body = r.node
-            if (!tokens[i] || tokens[i].type != 'catch')
-                throw 'expected catch at ' + describeLocation(tokens[i])
-            r = parse(tokens, i + 1, ['comma', 'pipe', 'right-paren',
-                'right-brace', 'right-square', '<end-of-program>'].concat(until))
-            i = r.i
-            let handler = r.node
+            let handler
+            if (tokens[i] && tokens[i].type == 'catch') {
+                r = parse(tokens, i + 1, ['comma', 'pipe', 'right-paren',
+                    'right-brace', 'right-square', '<end-of-program>'].concat(u))
+                i = r.i
+                handler = r.node
+            } else {
+                handler = new IdentityNode()
+            }
             ret.push(new TryCatchNode(body, handler))
         // Interpolated string literal
         } else if (t.type == 'quote-interp') {
@@ -1016,6 +1025,8 @@ class GenericIndex extends ParseNode {
     }
     * apply(input, conf) {
         let t = nameType(input)
+        if (t != 'array' && t != 'object')
+            throw `Cannot index ${t}`
         for (let i of this.index.apply(input, conf)) {
             if (t == 'array' && nameType(i) != 'number')
                 throw 'Cannot index array with ' + nameType(i) + ' ' +
@@ -1161,8 +1172,15 @@ class SpecificValueIterator extends ParseNode {
         this.filter = new GenericValueIterator()
     }
     * apply(input, conf) {
-        for (let o of this.source.apply(input, conf))
-            yield* Object.values(o)
+        for (let o of this.source.apply(input, conf)) {
+            let t = nameType(o)
+            if (t == 'array')
+                yield* o
+            else if (t == 'object')
+                yield* Object.values(o)
+            else
+                throw `Cannot iterate over ${t} (${JSON.stringify(o)})`
+        }
     }
     * paths(input, conf) {
         for (let [p, v] of this.zip(this.source.paths(input, conf),
@@ -1197,10 +1215,13 @@ class GenericValueIterator extends ParseNode {
         super()
     }
     * apply(input, conf) {
-        if (nameType(input) == 'array')
+        let t = nameType(input)
+        if (t == 'array')
             yield* input
-        else
+        else if (t == 'object')
             yield* Object.values(input)
+        else
+            throw `Cannot iterate over ${t} (${JSON.stringify(input)})`
     }
     * paths(input, conf) {
         if (nameType(input) == 'array')
@@ -1953,13 +1974,22 @@ const formats = {
     html(v) {
         if (typeof v != 'string')
             v = prettyPrint(v, '', '', '')
-        return v.replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(
-            /&/g, '&amp;').replace(/'/g, '&apos;').replace(/"/g, '&quot;')
+        return v.replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/'/g, '&apos;')
+            .replace(/"/g, '&quot;')
     },
     uri(v) {
         if (typeof v != 'string')
             v = prettyPrint(v, '', '', '')
-        return escape(v)
+        return encodeURIComponent(v).replace(/[!'()*]/g,
+            c => '%' + c.charCodeAt(0).toString(16).toUpperCase())
+    },
+    urid(v) {
+        if (typeof v != 'string')
+            throw 'can only URI-decode strings'
+        return decodeURIComponent(v)
     },
     csv(v) {
         if (nameType(v) != 'array')
@@ -1978,9 +2008,14 @@ const formats = {
     tsv(v) {
         if (nameType(v) != 'array')
             throw 'cannot tsv-format ' + nameType(v) + ', only array'
+        const esc = s => s
+            .replace(/\\/g, '\\\\')
+            .replace(/\t/g, '\\t')
+            .replace(/\n/g, '\\n')
+            .replace(/\r/g, '\\r')
         return v.map(x => {
             if (typeof x == 'string')
-                return escapeString(x)
+                return esc(x)
             else if (typeof x == 'number')
                 return '' + x
             else if (x === null)
@@ -1992,17 +2027,21 @@ const formats = {
     base64(v) {
         if (typeof v != 'string')
             v = prettyPrint(v, '', '', '')
-        return btoa(v)
+        if (typeof Buffer != 'undefined')
+            return Buffer.from(v, 'utf8').toString('base64')
+        return btoa(unescape(encodeURIComponent(v)))
     },
     base64d(v) {
         if (typeof v != 'string')
             throw 'can only base64-decode strings'
-        return atob(v)
+        if (typeof Buffer != 'undefined')
+            return Buffer.from(v, 'base64').toString('utf8')
+        return decodeURIComponent(escape(atob(v)))
     },
     sh(v) {
         let t = nameType(v)
         if (t == 'string')
-            return "'" + t.replace(/'/g, "'\\''") + "'"
+            return "'" + v.replace(/'/g, "'\\''") + "'"
         else if (t == 'number')
             return '' + v
         else if (t == 'boolean')
@@ -2067,6 +2106,87 @@ const functions = {
         let f = args[0]
         yield* f.paths(input, conf)
     }, {params: [{mode: 'defer'}]}),
+    'paths/0': function*(input) {
+        function* walk(v, p=[]) {
+            let t = nameType(v)
+            if (t == 'array') {
+                for (let i=0;i<v.length;i++) {
+                    let np = p.concat([i])
+                    yield np
+                    yield* walk(v[i], np)
+                }
+            } else if (t == 'object') {
+                for (let k of Object.keys(v)) {
+                    let np = p.concat([k])
+                    yield np
+                    yield* walk(v[k], np)
+                }
+            }
+        }
+        yield* walk(input)
+    },
+    'getpath/1': Object.assign(function*(input, conf, args) {
+        for (let p of args[0].apply(input, conf)) {
+            if (nameType(p) != 'array')
+                throw 'paths must be array of path elements'
+            let cur = input
+            let ok = true
+            for (let k of p) {
+                let t = nameType(cur)
+                if (t == 'array' && typeof k == 'number') {
+                    if (k < 0) k = cur.length + k
+                    if (k < 0 || k >= cur.length) { ok = false; break }
+                    cur = cur[k]
+                } else if (t == 'object' && (typeof k == 'string' || typeof k == 'number')) {
+                    k = ''+k
+                    if (!cur.hasOwnProperty(k)) { ok = false; break }
+                    cur = cur[k]
+                } else { ok = false; break }
+            }
+            yield ok ? (typeof cur === 'undefined' ? null : cur) : null
+        }
+    }, {params:[{label:'path'}]}),
+    'delpaths/1': Object.assign(function*(input, conf, args) {
+        for (let plist of args[0].apply(input, conf)) {
+            if (nameType(plist) != 'array')
+                throw 'Paths must be specified as an array'
+            const del = (obj, path) => {
+                if (path.length === 0) return obj
+                const [k, ...rest] = path
+                let t = nameType(obj)
+                if (t == 'array') {
+                    let idx = typeof k=='number'? k : Number(k)
+                    if (idx < 0) idx = obj.length + idx
+                    if (!Number.isInteger(idx) || idx < 0 || idx >= obj.length)
+                        return obj
+                    let out = obj.slice()
+                    if (rest.length===0) {
+                        out.splice(idx,1)
+                    } else {
+                        out[idx] = del(out[idx], rest)
+                    }
+                    return out
+                } else if (t == 'object') {
+                    let key = typeof k=='string'? k : String(k)
+                    if (!obj.hasOwnProperty(key)) return obj
+                    let out = {...obj}
+                    if (rest.length===0) {
+                        delete out[key]
+                    } else {
+                        out[key] = del(out[key], rest)
+                    }
+                    return out
+                }
+                return obj
+            }
+            let out = input
+            for (let p of plist) {
+                if (nameType(p) == 'array')
+                    out = del(out, p)
+            }
+            yield out
+        }
+    }, {params:[{label:'paths'}]}),
     'select/1': Object.assign(function*(input, conf, args) {
         let selector = args[0]
         for (let b of selector.apply(input, conf))
@@ -2238,6 +2358,32 @@ const functions = {
     'tonumber/0': function*(input) {
         yield Number.parseFloat(input)
     },
+    'pow/2': function*(input, conf, args) {
+        for (let a of args[0].apply(input, conf))
+            for (let b of args[1].apply(input, conf))
+                yield Math.pow(a, b)
+    },
+    'sqrt/0': function*(input) {
+        yield Math.sqrt(input)
+    },
+    'sin/0': function*(input) {
+        yield Math.sin(input)
+    },
+    'cos/0': function*(input) {
+        yield Math.cos(input)
+    },
+    'abs/0': function*(input) {
+        if (typeof input == 'number')
+            yield Math.abs(input)
+        else
+            yield input
+    },
+    'fabs/0': function*(input) {
+        if (typeof input == 'number')
+            yield Math.abs(input)
+        else
+            yield input
+    },
     'reverse/0': function*(input) {
         if (nameType(input) != 'array')
             throw 'can only reverse arrays, not ' + nameType(input)
@@ -2252,14 +2398,159 @@ const functions = {
     'sort_by/1': Object.assign(function*(input, conf, args) {
         if (nameType(input) != 'array')
             throw 'can only sort arrays, not ' + nameType(input)
-        let key = args[0]
-        let r = input.map(v => ({
-            key: key.apply(v, conf).next().value,
-            value: v
-        }))
-        r.sort((a, b) => compareValues(a.key, b.key))
-        yield r.map(a => a.value)
+        const key = args[0]
+        const pairs = input.map(v => {
+            const all = Array.from(key.apply(v, conf))
+            const k = all.length > 1 ? all : all[0]
+            return { key: k, value: v }
+        })
+        pairs.sort((a, b) => compareValues(a.key, b.key))
+        yield pairs.map(p => p.value)
     }, {params: [{mode: 'defer'}]}),
+
+    'group_by/1': Object.assign(function*(input, conf, args) {
+        if (nameType(input) != 'array')
+            throw 'can only group arrays, not ' + nameType(input)
+        const key = args[0]
+        const pairs = input.map(v => {
+            const all = Array.from(key.apply(v, conf))
+            const k = all.length > 1 ? all : all[0]
+            return { key: k, value: v }
+        })
+        pairs.sort((a, b) => compareValues(a.key, b.key))
+        const out = []
+        let cur = []
+        for (let i = 0; i < pairs.length; i++) {
+            if (i === 0 || compareValues(pairs[i].key, pairs[i-1].key) !== 0) {
+                if (i !== 0) out.push(cur)
+                cur = [pairs[i].value]
+            } else {
+                cur.push(pairs[i].value)
+            }
+        }
+        if (pairs.length) out.push(cur)
+        yield out
+    }, {params: [{mode: 'defer'}]}),
+
+    'unique/0': function*(input) {
+        if (nameType(input) != 'array')
+            throw 'can only unique arrays, not ' + nameType(input)
+        const r = Array.from(input)
+        r.sort(compareValues)
+        const out = []
+        for (let i = 0; i < r.length; i++) {
+            if (i === 0 || compareValues(r[i], r[i-1]) !== 0)
+                out.push(r[i])
+        }
+        yield out
+    },
+
+    'min/0': function*(input) {
+        if (nameType(input) != 'array')
+            throw 'can only compute min of arrays, not ' + nameType(input)
+        if (input.length === 0) return yield null
+        let m = input[0]
+        for (let i = 1; i < input.length; i++)
+            if (compareValues(input[i], m) < 0)
+                m = input[i]
+        yield m
+    },
+
+    'max/0': function*(input) {
+        if (nameType(input) != 'array')
+            throw 'can only compute max of arrays, not ' + nameType(input)
+        if (input.length === 0) return yield null
+        let m = input[0]
+        for (let i = 1; i < input.length; i++)
+            if (compareValues(input[i], m) >= 0)
+                m = input[i]
+        yield m
+    },
+
+    'min_by/1': Object.assign(function*(input, conf, args) {
+        if (nameType(input) != 'array')
+            throw 'can only min arrays, not ' + nameType(input)
+        const keyF = args[0]
+        if (input.length === 0) return yield null
+        let best = {
+            key: keyF.apply(input[0], conf).next().value,
+            value: input[0]
+        }
+        for (let i = 1; i < input.length; i++) {
+            const k = keyF.apply(input[i], conf).next().value
+            if (compareValues(k, best.key) < 0)
+                best = { key: k, value: input[i] }
+        }
+        yield best.value
+    }, {params: [{mode: 'defer'}]}),
+
+    'max_by/1': Object.assign(function*(input, conf, args) {
+        if (nameType(input) != 'array')
+            throw 'can only max arrays, not ' + nameType(input)
+        const keyF = args[0]
+        if (input.length === 0) return yield null
+        let best = {
+            key: keyF.apply(input[0], conf).next().value,
+            value: input[0]
+        }
+        for (let i = 1; i < input.length; i++) {
+            const k = keyF.apply(input[i], conf).next().value
+            if (compareValues(k, best.key) >= 0)
+                best = { key: k, value: input[i] }
+        }
+        yield best.value
+    }, {params: [{mode: 'defer'}]}),
+
+    'flatten/0': function*(input) {
+        if (nameType(input) != 'array')
+            throw 'can only flatten arrays'
+        const recur = (arr) => arr.reduce((a, v) => {
+            if (nameType(v) == 'array')
+                a.push(...recur(v))
+            else
+                a.push(v)
+            return a
+        }, [])
+        yield recur(input)
+    },
+    'flatten/1': Object.assign(function*(input, conf, args) {
+        if (nameType(input) != 'array')
+            throw 'can only flatten arrays'
+        for (let d of args[0].apply(input, conf)) {
+            if (typeof d != 'number')
+                throw 'flatten depth must be a number'
+            if (d < 0)
+                throw 'flatten depth must not be negative'
+            const step = (arr, depth) => arr.reduce((a, v) => {
+                if (depth > 0 && nameType(v) == 'array')
+                    a.push(...step(v, depth - 1))
+                else
+                    a.push(v)
+                return a
+            }, [])
+            yield step(input, d)
+        }
+    }, {params: [{label: 'depth'}]}),
+
+    'transpose/0': function*(input) {
+        if (nameType(input) != 'array')
+            throw 'can only transpose arrays, not ' + nameType(input)
+        let rows = input
+        let max = 0
+        for (let r of rows) {
+            if (nameType(r) != 'array')
+                throw 'transpose expects an array of arrays'
+            if (r.length > max) max = r.length
+        }
+        let out = []
+        for (let i = 0; i < max; i++) {
+            let row = []
+            for (let r of rows)
+                row.push(typeof r[i] == 'undefined' ? null : r[i])
+            out.push(row)
+        }
+        yield out
+    },
     'explode/0': function*(input, conf) {
         if (nameType(input) != 'string')
             throw 'can only explode string, not ' + nameType(input)
@@ -2297,6 +2588,54 @@ const functions = {
         for (let s of args[0].apply(input, conf))
             yield a.join(s)
     }, {params: [{label: 'delimiter'}]}),
+
+    'gmtime/0': function*(input) {
+        if (typeof input != 'number')
+            throw 'gmtime requires numeric input'
+        const d = new Date(input * 1000)
+        const yday = Math.floor((Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()) -
+            Date.UTC(d.getUTCFullYear(), 0, 1)) / 86400000)
+        yield [d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(),
+               d.getUTCHours(), d.getUTCMinutes(), d.getUTCSeconds(),
+               d.getUTCDay(), yday]
+    },
+    'mktime/0': function*(input) {
+        if (nameType(input) != 'array' || input.some(v => typeof v != 'number'))
+            throw 'mktime requires parsed datetime inputs'
+        const [Y, M, D, h=0, m=0, s=0] = input
+        yield Math.floor(Date.UTC(Y, M, D ?? 1, h, m, s) / 1000)
+    },
+    'strftime/1': Object.assign(function*(input, conf, args) {
+        const makeDate = () => {
+            if (typeof input == 'number')
+                return new Date(input * 1000)
+            if (nameType(input) == 'array' && input.every(v => typeof v == 'number')) {
+                const [Y,M,D,h=0,mi=0,s=0] = input
+                return new Date(Date.UTC(Y, M, D ?? 1, h, mi, s))
+            }
+            throw 'strftime/1 requires parsed datetime inputs'
+        }
+        for (let fmt of args[0].apply(input, conf)) {
+            if (typeof fmt != 'string')
+                throw 'strftime/1 requires a string format'
+            const d = makeDate()
+            const WDAY = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday']
+            const MONTH = ['January','February','March','April','May','June','July','August','September','October','November','December']
+            const pad = n => String(n).padStart(2,'0')
+            const rep = {
+                '%Y': d.getUTCFullYear(),
+                '%m': pad(d.getUTCMonth()+1),
+                '%d': pad(d.getUTCDate()),
+                '%H': pad(d.getUTCHours()),
+                '%M': pad(d.getUTCMinutes()),
+                '%S': pad(d.getUTCSeconds()),
+                '%A': WDAY[d.getUTCDay()],
+                '%B': MONTH[d.getUTCMonth()],
+            }
+            let out = fmt.replace(/%[YmdHMSAB]/g, m => rep[m] ?? m)
+            yield out
+        }
+    }, {params:[{label:'format'}]}),
 
     // --- Additional builtins for jq compatibility ---
     'startswith/1': Object.assign(function*(input, conf, args) {

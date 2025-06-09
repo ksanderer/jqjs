@@ -389,6 +389,7 @@ function describeLocation(token) {
 // token stream and node is one of the filtering nodes defined below.
 // Returns at end of stream or when a token of type until is found.
 function parse(tokens, startAt=0, until='none') {
+    if (!Array.isArray(until)) until = [until]
     let i = startAt
     let t = tokens[i]
     let ret = []
@@ -596,15 +597,19 @@ function parse(tokens, startAt=0, until='none') {
             }
             ret.push(new ForEachNode(generator, name, init, update, extract))
         } else if (t.type == 'try') {
-            let r = parse(tokens, i + 1, ['catch'])
+            let u = Array.isArray(until) ? until : [until]
+            let r = parse(tokens, i + 1, ['catch'].concat(u))
             i = r.i
             let body = r.node
-            if (!tokens[i] || tokens[i].type != 'catch')
-                throw 'expected catch at ' + describeLocation(tokens[i])
-            r = parse(tokens, i + 1, ['comma', 'pipe', 'right-paren',
-                'right-brace', 'right-square', '<end-of-program>'].concat(until))
-            i = r.i
-            let handler = r.node
+            let handler
+            if (tokens[i] && tokens[i].type == 'catch') {
+                r = parse(tokens, i + 1, ['comma', 'pipe', 'right-paren',
+                    'right-brace', 'right-square', '<end-of-program>'].concat(u))
+                i = r.i
+                handler = r.node
+            } else {
+                handler = new IdentityNode()
+            }
             ret.push(new TryCatchNode(body, handler))
         // Interpolated string literal
         } else if (t.type == 'quote-interp') {
@@ -1020,6 +1025,8 @@ class GenericIndex extends ParseNode {
     }
     * apply(input, conf) {
         let t = nameType(input)
+        if (t != 'array' && t != 'object')
+            throw `Cannot index ${t}`
         for (let i of this.index.apply(input, conf)) {
             if (t == 'array' && nameType(i) != 'number')
                 throw 'Cannot index array with ' + nameType(i) + ' ' +
@@ -1165,8 +1172,15 @@ class SpecificValueIterator extends ParseNode {
         this.filter = new GenericValueIterator()
     }
     * apply(input, conf) {
-        for (let o of this.source.apply(input, conf))
-            yield* Object.values(o)
+        for (let o of this.source.apply(input, conf)) {
+            let t = nameType(o)
+            if (t == 'array')
+                yield* o
+            else if (t == 'object')
+                yield* Object.values(o)
+            else
+                throw `Cannot iterate over ${t} (${JSON.stringify(o)})`
+        }
     }
     * paths(input, conf) {
         for (let [p, v] of this.zip(this.source.paths(input, conf),
@@ -1201,10 +1215,13 @@ class GenericValueIterator extends ParseNode {
         super()
     }
     * apply(input, conf) {
-        if (nameType(input) == 'array')
+        let t = nameType(input)
+        if (t == 'array')
             yield* input
-        else
+        else if (t == 'object')
             yield* Object.values(input)
+        else
+            throw `Cannot iterate over ${t} (${JSON.stringify(input)})`
     }
     * paths(input, conf) {
         if (nameType(input) == 'array')

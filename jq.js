@@ -692,13 +692,14 @@ function parseDotSquare(tokens, startAt=0) {
     let r = parse(tokens, i, ['right-square', 'colon'])
     if (tokens[r.i].type == 'colon') {
         // Slice
-        let fr = r
-        if (fr.length === 0)
-            fr.node = new NumberNode(0)
+        let from = r.node
+        if (from.length === 0)
+            from = new NumberNode(0)
         r = parse(tokens, r.i + 1, ['right-square'])
-        if (r.length === 0)
-            r.node = new NumberNode(-1)
-        return {node: new GenericSlice(fr.node, r.node), i: r.i}
+        let to = r.node
+        if (to.length === 0)
+            to = new NumberNode(Infinity)
+        return {node: new GenericSlice(from, to), i: r.i}
     }
     return {node: new GenericIndex(r.node), i: r.i}
 }
@@ -1050,9 +1051,15 @@ class GenericSlice extends ParseNode {
     * apply(input, conf) {
         for (let l of this.from.apply(input, conf)) {
             l = Math.floor(l)
+            if (Number.isNaN(l))
+                l = 0
             if (l < 0) l += input.length
             for (let r of this.to.apply(input, conf)) {
                 r = Math.ceil(r)
+                if (!Number.isFinite(r))
+                    r = input.length
+                if (Number.isNaN(r))
+                    r = input.length
                 if (r < 0)
                     r += input.length
                 yield input.slice(l, r)
@@ -1430,12 +1437,24 @@ class MultiplicationOperator extends OperatorNode {
         throw 'type mismatch in *:' + lt + ' and ' + rt + ' cannot be multiplied'
     }
     repeat(s, n) {
-        if (n == 0)
-            return null;
-        let r = []
-        for (let i = 0; i < n; i++)
-            r.push(s)
-        return r.join('')
+        if (!Number.isFinite(n) || n < 0)
+            throw 'invalid repeat count'
+        if (n === 0 || s.length === 0)
+            return ''
+        if (s.length * n > 1e7)
+            throw 'Repeat string result too long'
+        let result = ''
+        let chunk = s
+        while (n > 0) {
+            if (n & 1)
+                result += chunk
+            if ((n >>= 1)) {
+                chunk += chunk
+                if (chunk.length > 1e7)
+                    throw 'Repeat string result too long'
+            }
+        }
+        return result
     }
     merge(l, r) {
         for (let k of Object.keys(r)) {

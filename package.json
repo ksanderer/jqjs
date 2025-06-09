@@ -1,0 +1,16 @@
+{
+  "name": "jqjs",
+  "version": "1.0.0",
+  "description": "jqjs is a JavaScript implementation of the [jq] query language. It implements the core language features in pure JavaScript.",
+  "main": "jq.js",
+  "scripts": {
+    "test": "vitest"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "devDependencies": {
+    "vitest": "^3.2.3"
+  }
+}
